@@ -1583,6 +1583,18 @@ class _DisplayMenuState extends State<_DisplayMenu> {
       if (!visible) return Offstage();
       final groupValue = data['scrollStyle'] as String;
       final edgeScrollEdgeThickness = data['edgeScrollEdgeThickness'] as int;
+      final safeZonePercent = (double.tryParse(bind.mainGetUserDefaultOption(
+                  key: kOptionAllDisplaysSafeZonePercent)) ??
+              10.0)
+          .clamp(0.0, 30.0);
+      final canvasNavigationSensitivity = (double.tryParse(
+                  bind.mainGetUserDefaultOption(
+                      key: kOptionCanvasNavigationSensitivity)) ??
+              100.0)
+          .clamp(25.0, 300.0);
+      final macCanvasNavigationEnabled = option2bool(
+          kOptionMacCmdCanvasNavigation,
+          bind.mainGetUserDefaultOption(key: kOptionMacCmdCanvasNavigation));
 
       onChangeScrollStyle(String? value) async {
         if (value == null) return;
@@ -1598,6 +1610,36 @@ class _DisplayMenuState extends State<_DisplayMenu> {
         await bind.sessionSetEdgeScrollEdgeThickness(
             sessionId: ffi.sessionId, value: newThickness);
         widget.ffi.canvasModel.updateEdgeScrollEdgeThickness(newThickness);
+        state.setState(() {});
+      }
+
+      Future<void> refreshCanvasOptions() async {
+        await widget.ffi.canvasModel.updateViewStyle(refreshMousePos: false);
+        await widget.ffi.canvasModel.updateScrollStyle();
+        state.setState(() {});
+      }
+
+      onChangeMacCanvasNavigation(bool? value) async {
+        if (value == null) return;
+        await bind.mainSetUserDefaultOption(
+            key: kOptionMacCmdCanvasNavigation,
+            value: bool2option(kOptionMacCmdCanvasNavigation, value));
+        state.setState(() {});
+      }
+
+      onChangeSafeZonePercent(double? value) async {
+        if (value == null) return;
+        await bind.mainSetUserDefaultOption(
+            key: kOptionAllDisplaysSafeZonePercent,
+            value: value.round().toString());
+        await refreshCanvasOptions();
+      }
+
+      onChangeCanvasNavigationSensitivity(double? value) async {
+        if (value == null) return;
+        await bind.mainSetUserDefaultOption(
+            key: kOptionCanvasNavigationSensitivity,
+            value: value.round().toString());
         state.setState(() {});
       }
 
@@ -1622,6 +1664,17 @@ class _DisplayMenuState extends State<_DisplayMenu> {
               closeOnActivate: groupValue != kRemoteScrollStyleEdge,
               ffi: widget.ffi,
             ),
+            if (isMacOS)
+              RdoMenuButton<String>(
+                child: Text(translate('Canvas')),
+                value: kRemoteScrollStyleCanvas,
+                groupValue: groupValue,
+                onChanged: widget.ffi.canvasModel.imageOverflow.value
+                    ? (value) => onChangeScrollStyle(value)
+                    : null,
+                closeOnActivate: true,
+                ffi: widget.ffi,
+              ),
             if (!isWeb) ...[
               RdoMenuButton<String>(
                 child: Text(translate('ScrollEdge')),
@@ -1641,6 +1694,36 @@ class _DisplayMenuState extends State<_DisplayMenu> {
                     colorScheme: colorScheme,
                   )),
             ],
+            if (isMacOS)
+              CkbMenuButton(
+                value: macCanvasNavigationEnabled,
+                onChanged: onChangeMacCanvasNavigation,
+                ffi: widget.ffi,
+                child: Text(
+                    translate('Use Cmd + drag / wheel to navigate canvas')),
+              ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (isMacOS) ...[
+                    Text(translate('Canvas navigation sensitivity')),
+                    CanvasSensitivityControl(
+                      value: canvasNavigationSensitivity,
+                      onChanged: onChangeCanvasNavigationSensitivity,
+                      colorScheme: colorScheme,
+                    ).paddingOnly(top: 8, bottom: 8),
+                  ],
+                  Text(translate('All monitors safe zone')),
+                  SafeZonePercentControl(
+                    value: safeZonePercent,
+                    onChanged: onChangeSafeZonePercent,
+                    colorScheme: colorScheme,
+                  ).paddingOnly(top: 8),
+                ],
+              ),
+            ),
             Divider(),
           ]));
     });
@@ -3407,5 +3490,108 @@ class EdgeThicknessControl extends StatelessWidget {
     );
 
     return slider;
+  }
+}
+
+class SafeZonePercentControl extends StatelessWidget {
+  final double value;
+  final ValueChanged<double>? onChanged;
+  final ColorScheme? colorScheme;
+
+  const SafeZonePercentControl({
+    Key? key,
+    required this.value,
+    this.onChanged,
+    this.colorScheme,
+  }) : super(key: key);
+
+  static const double kMin = 0;
+  static const double kMax = 30;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = this.colorScheme ?? Theme.of(context).colorScheme;
+
+    return SliderTheme(
+      data: SliderTheme.of(context).copyWith(
+        activeTrackColor: colorScheme.primary,
+        thumbColor: colorScheme.primary,
+        overlayColor: colorScheme.primary.withOpacity(0.1),
+        showValueIndicator: ShowValueIndicator.never,
+        thumbShape: _RectValueThumbShape(
+          min: SafeZonePercentControl.kMin,
+          max: SafeZonePercentControl.kMax,
+          width: 48,
+          height: 24,
+          radius: 4,
+          unit: '%',
+        ),
+      ),
+      child: Semantics(
+        value: value.round().toString(),
+        child: Slider(
+          value: value,
+          min: SafeZonePercentControl.kMin,
+          max: SafeZonePercentControl.kMax,
+          divisions: (SafeZonePercentControl.kMax - SafeZonePercentControl.kMin)
+              .round(),
+          semanticFormatterCallback: (double newValue) =>
+              '${newValue.round()}%',
+          onChanged: onChanged,
+        ),
+      ),
+    );
+  }
+}
+
+class CanvasSensitivityControl extends StatelessWidget {
+  final double value;
+  final ValueChanged<double>? onChanged;
+  final ColorScheme? colorScheme;
+
+  const CanvasSensitivityControl({
+    Key? key,
+    required this.value,
+    this.onChanged,
+    this.colorScheme,
+  }) : super(key: key);
+
+  static const double kMin = 25;
+  static const double kMax = 300;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = this.colorScheme ?? Theme.of(context).colorScheme;
+
+    return SliderTheme(
+      data: SliderTheme.of(context).copyWith(
+        activeTrackColor: colorScheme.primary,
+        thumbColor: colorScheme.primary,
+        overlayColor: colorScheme.primary.withOpacity(0.1),
+        showValueIndicator: ShowValueIndicator.never,
+        thumbShape: _RectValueThumbShape(
+          min: CanvasSensitivityControl.kMin,
+          max: CanvasSensitivityControl.kMax,
+          width: 56,
+          height: 24,
+          radius: 4,
+          unit: '%',
+        ),
+      ),
+      child: Semantics(
+        value: value.round().toString(),
+        child: Slider(
+          value: value,
+          min: CanvasSensitivityControl.kMin,
+          max: CanvasSensitivityControl.kMax,
+          divisions:
+              (CanvasSensitivityControl.kMax - CanvasSensitivityControl.kMin)
+                  .round(),
+          semanticFormatterCallback: (double newValue) =>
+              '${newValue.round()}%',
+          onChanged: onChanged,
+        ),
+      ),
+    );
   }
 }

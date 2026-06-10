@@ -81,6 +81,11 @@ const String kWindowEventOpenMonitorSession = "open_monitor_session";
 const String kOptionViewStyle = "view_style";
 const String kOptionScrollStyle = "scroll_style";
 const String kOptionEdgeScrollEdgeThickness = "edge-scroll-edge-thickness";
+const String kOptionAllDisplaysSafeZonePercent =
+    "all-displays-safe-zone-percent";
+const String kOptionMacCmdCanvasNavigation = "mac-cmd-canvas-navigation";
+const String kOptionCanvasNavigationSensitivity =
+    "canvas-navigation-sensitivity";
 const String kOptionImageQuality = "image_quality";
 const String kOptionOpenNewConnInTabs = "enable-open-new-connections-in-tabs";
 const String kOptionTextureRender = "use-texture-render";
@@ -144,8 +149,7 @@ const String kOptionRemoteMenubarDragLeft = "remote-menubar-drag-left";
 const String kOptionRemoteMenubarDragRight = "remote-menubar-drag-right";
 const String kOptionRemoteMenubarEdge = "remote-menubar-edge";
 const String kOptionRemoteMenubarFraction = "remote-menubar-frac";
-const String kOptionAllowMultiEdgeToolbarDock =
-    "allow-multi-edge-toolbar-dock";
+const String kOptionAllowMultiEdgeToolbarDock = "allow-multi-edge-toolbar-dock";
 const String kOptionHideAbTagsPanel = "hideAbTagsPanel";
 const String kOptionRemoteMenubarState = "remoteMenubarState";
 const String kOptionPeerSorting = "peer-sorting";
@@ -170,7 +174,8 @@ const String kOptionShowVirtualMouse = "show-virtual-mouse";
 const String kOptionVirtualMouseScale = "virtual-mouse-scale";
 const String kOptionShowVirtualJoystick = "show-virtual-joystick";
 const String kOptionAllowAskForNoteAtEndOfConnection = "allow-ask-for-note";
-const String kOptionEnableShowTerminalExtraKeys = "enable-show-terminal-extra-keys";
+const String kOptionEnableShowTerminalExtraKeys =
+    "enable-show-terminal-extra-keys";
 
 // network options
 const String kOptionAllowWebSocket = "allow-websocket";
@@ -205,8 +210,10 @@ const String kOptionDisableFloatingWindow = "disable-floating-window";
 
 const String kOptionKeepScreenOn = "keep-screen-on";
 
-const String kOptionKeepAwakeDuringIncomingSessions = "keep-awake-during-incoming-sessions";
-const String kOptionKeepAwakeDuringOutgoingSessions = "keep-awake-during-outgoing-sessions";
+const String kOptionKeepAwakeDuringIncomingSessions =
+    "keep-awake-during-incoming-sessions";
+const String kOptionKeepAwakeDuringOutgoingSessions =
+    "keep-awake-during-outgoing-sessions";
 
 const String kOptionShowMobileAction = "showMobileActions";
 
@@ -381,6 +388,9 @@ const kRemoteScrollStyleBar = 'scrollbar';
 
 /// [kRemoteScrollStyleEdge] Scroll image auto at edges.
 const kRemoteScrollStyleEdge = 'scrolledge';
+
+/// [kRemoteScrollStyleCanvas] Keep a static canvas and navigate it locally.
+const kRemoteScrollStyleCanvas = 'scrollcanvas';
 
 /// [kScrollModeDefault] Mouse or touchpad, the default scroll mode.
 const kScrollModeDefault = 'default';

@@ -773,6 +773,15 @@ class _ImagePaintState extends State<ImagePaint> {
   RxBool get remoteCursorMoved => widget.remoteCursorMoved;
   Widget Function(Widget)? get listenerBuilder => widget.listenerBuilder;
 
+  double _safeZoneThickness(CanvasModel c) {
+    if (!c.showMonitorSafeZone) return 0;
+    final safeZoneThickness = c.monitorSafeZoneThickness;
+    if (safeZoneThickness <= 0) return 0;
+    return safeZoneThickness
+        .clamp(0.0, (c.size.shortestSide / 2).toDouble())
+        .toDouble();
+  }
+
   @override
   Widget build(BuildContext context) {
     final m = Provider.of<ImageModel>(context);
@@ -825,15 +834,22 @@ class _ImagePaintState extends State<ImagePaint> {
               onHover: (evt) {},
               child: child);
         });
-    if (c.imageOverflow.isTrue && c.scrollStyle != ScrollStyle.scrollauto) {
-      final paintWidth = c.getDisplayWidth() * s;
-      final paintHeight = c.getDisplayHeight() * s;
+    if (c.imageOverflow.isTrue &&
+        c.scrollStyle != ScrollStyle.scrollauto &&
+        c.scrollStyle != ScrollStyle.scrollcanvas) {
+      final safeZoneThickness = _safeZoneThickness(c);
+      final paintWidth = c.getDisplayWidth() * s + safeZoneThickness * 2;
+      final paintHeight = c.getDisplayHeight() * s + safeZoneThickness * 2;
       final paintSize = Size(paintWidth, paintHeight);
-      final paintWidget =
-          m.useTextureRender || widget.ffi.ffiModel.pi.forceTextureRender
-              ? _BuildPaintTextureRender(
-                  c, s, Offset.zero, paintSize, isViewOriginal())
-              : _buildScrollbarNonTextureRender(m, paintSize, s);
+      final paintWidget = m.useTextureRender ||
+              widget.ffi.ffiModel.pi.forceTextureRender
+          ? _BuildPaintTextureRender(
+              c,
+              s,
+              Offset(safeZoneThickness, safeZoneThickness),
+              paintSize,
+              isViewOriginal())
+          : _buildScrollbarNonTextureRender(m, paintSize, s, safeZoneThickness);
       return NotificationListener<ScrollNotification>(
           onNotification: (notification) {
             c.updateScrollPercent();
@@ -871,10 +887,17 @@ class _ImagePaintState extends State<ImagePaint> {
   }
 
   Widget _buildScrollbarNonTextureRender(
-      ImageModel m, Size imageSize, double s) {
-    return CustomPaint(
-      size: imageSize,
-      painter: ImagePainter(image: m.image, x: 0, y: 0, scale: s),
+      ImageModel m, Size imageSize, double s, double safeZoneThickness) {
+    return ColoredBox(
+      color: Colors.black,
+      child: CustomPaint(
+        size: imageSize,
+        painter: ImagePainter(
+            image: m.image,
+            x: safeZoneThickness / s,
+            y: safeZoneThickness / s,
+            scale: s),
+      ),
     );
   }
 
@@ -887,13 +910,16 @@ class _ImagePaintState extends State<ImagePaint> {
         sizeScale = s / displays[0].scale;
       }
     }
-    return CustomPaint(
-      size: Size(c.size.width, c.size.height),
-      painter: ImagePainter(
-          image: m.image,
-          x: c.x / sizeScale,
-          y: c.y / sizeScale,
-          scale: sizeScale),
+    return ColoredBox(
+      color: Colors.black,
+      child: CustomPaint(
+        size: Size(c.size.width, c.size.height),
+        painter: ImagePainter(
+            image: m.image,
+            x: c.x / sizeScale,
+            y: c.y / sizeScale,
+            scale: sizeScale),
+      ),
     );
   }
 
@@ -930,7 +956,10 @@ class _ImagePaintState extends State<ImagePaint> {
     return SizedBox(
       width: size.width,
       height: size.height,
-      child: Stack(children: children),
+      child: ColoredBox(
+        color: Colors.black,
+        child: Stack(children: children),
+      ),
     );
   }
 

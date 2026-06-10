@@ -1955,7 +1955,8 @@ class ImageModel with ChangeNotifier {
 enum ScrollStyle {
   scrollbar(kRemoteScrollStyleBar),
   scrollauto(kRemoteScrollStyleAuto),
-  scrolledge(kRemoteScrollStyleEdge);
+  scrolledge(kRemoteScrollStyleEdge),
+  scrollcanvas(kRemoteScrollStyleCanvas);
 
   const ScrollStyle(this.stringValue);
 
@@ -1973,6 +1974,8 @@ enum ScrollStyle {
         return scrollauto;
       case 'scrolledge':
         return scrolledge;
+      case 'scrollcanvas':
+        return scrollcanvas;
     }
 
     if (fallbackValue != null) {
@@ -1995,6 +1998,8 @@ enum ScrollStyle {
         return scrollauto;
       case kRemoteScrollStyleEdge:
         return scrolledge;
+      case kRemoteScrollStyleCanvas:
+        return scrollcanvas;
     }
 
     if (fallbackValue != null) {
@@ -2154,6 +2159,7 @@ class CanvasModel with ChangeNotifier {
   ScrollStyle _scrollStyle = ScrollStyle.scrollauto;
   // edge scroll mode: trigger scrolling when the cursor is close to the edge of the view
   int _edgeScrollEdgeThickness = 100;
+  bool _desktopCanvasNavigationMode = false;
   // tracks whether edge scroll should be active, prevents spurious
   // scrolling when the cursor enters the view from outside
   EdgeScrollState _edgeScrollState = EdgeScrollState.inactive;
@@ -2269,6 +2275,43 @@ class CanvasModel with ChangeNotifier {
 
   updateSize() => _size = getSize();
 
+  bool _shouldUseAllDisplaySafeZone() {
+    final pi = parent.target?.ffiModel.pi;
+    if (pi == null ||
+        pi.currentDisplay != kAllDisplayValue ||
+        pi.displays.length <= 1 ||
+        !size.isFinite ||
+        size.width <= 0 ||
+        size.height <= 0) {
+      return false;
+    }
+    return _scrollStyle == ScrollStyle.scrolledge ||
+        _scrollStyle == ScrollStyle.scrollcanvas;
+  }
+
+  double _getAllDisplaySafeZoneRatio() {
+    final raw = double.tryParse(
+        bind.mainGetUserDefaultOption(key: kOptionAllDisplaysSafeZonePercent));
+    final percent = (raw ?? 10.0).clamp(0.0, 30.0);
+    return percent / 100.0;
+  }
+
+  double _getAllDisplaySafeZoneThickness() {
+    if (!_shouldUseAllDisplaySafeZone()) {
+      return 0;
+    }
+    return (size.shortestSide * _getAllDisplaySafeZoneRatio())
+        .clamp(0, size.shortestSide / 2)
+        .toDouble();
+  }
+
+  void _syncImageOverflow() {
+    final overflow = _x < 0 || y < 0;
+    if (_imageOverflow.value != overflow) {
+      _imageOverflow.value = overflow;
+    }
+  }
+
   updateViewStyle({refreshMousePos = true, notify = true}) async {
     final style = await bind.sessionGetViewStyle(sessionId: sessionId);
     if (style == null) {
@@ -2320,10 +2363,7 @@ class CanvasModel with ChangeNotifier {
       }
     }
     _resetCanvasOffset(displayWidth, displayHeight);
-    final overflow = _x < 0 || y < 0;
-    if (_imageOverflow.value != overflow) {
-      _imageOverflow.value = overflow;
-    }
+    _syncImageOverflow();
     if (notify) {
       notifyListeners();
     }
@@ -2334,15 +2374,21 @@ class CanvasModel with ChangeNotifier {
   }
 
   _resetCanvasOffset(int displayWidth, int displayHeight) {
-    _x = (size.width - displayWidth * _scale) / 2;
-    _y = (size.height - displayHeight * _scale) / 2;
+    final safeZoneThickness = _getAllDisplaySafeZoneThickness();
+    final effectiveWidth = max(size.width - safeZoneThickness * 2, 0);
+    final effectiveHeight = max(size.height - safeZoneThickness * 2, 0);
+    _x = safeZoneThickness + (effectiveWidth - displayWidth * _scale) / 2;
+    _y = safeZoneThickness + (effectiveHeight - displayHeight * _scale) / 2;
     if (isMobile) {
       _moveToCenterCursor();
     }
   }
 
   tryUpdateScrollStyle(Duration duration, String? style) async {
-    if (_scrollStyle == ScrollStyle.scrollauto) return;
+    if (_scrollStyle == ScrollStyle.scrollauto ||
+        _scrollStyle == ScrollStyle.scrollcanvas) {
+      return;
+    }
     style ??= await bind.sessionGetViewStyle(sessionId: sessionId);
     if (style != kRemoteViewStyleOriginal && style != kRemoteViewStyleCustom) {
       return;
@@ -2361,7 +2407,11 @@ class CanvasModel with ChangeNotifier {
     _scrollStyle =
         style != null ? ScrollStyle.fromString(style) : ScrollStyle.scrollauto;
 
-    if (_scrollStyle != ScrollStyle.scrollauto) {
+    _resetCanvasOffset(getDisplayWidth(), getDisplayHeight());
+    _syncImageOverflow();
+
+    if (_scrollStyle != ScrollStyle.scrollauto &&
+        _scrollStyle != ScrollStyle.scrollcanvas) {
       _resetScroll();
     }
 
@@ -2379,6 +2429,13 @@ class CanvasModel with ChangeNotifier {
 
   void updateEdgeScrollEdgeThickness(int newThickness) {
     _edgeScrollEdgeThickness = newThickness;
+    notifyListeners();
+  }
+
+  void panDesktopCanvas(Offset delta) {
+    _x += delta.dx;
+    _y += delta.dy;
+    _syncImageOverflow();
     notifyListeners();
   }
 
@@ -2436,6 +2493,9 @@ class CanvasModel with ChangeNotifier {
   }
 
   void moveDesktopMouse(double x, double y) {
+    if (_desktopCanvasNavigationMode) {
+      return;
+    }
     if (size.width == 0 || size.height == 0) {
       return;
     }
@@ -2443,14 +2503,21 @@ class CanvasModel with ChangeNotifier {
     // On mobile platforms, move the canvas with the cursor.
     final dw = getDisplayWidth() * _scale;
     final dh = getDisplayHeight() * _scale;
+    final safeZoneThickness = _getAllDisplaySafeZoneThickness();
+    final effectiveWidth = max(size.width - safeZoneThickness * 2, 1.0);
+    final effectiveHeight = max(size.height - safeZoneThickness * 2, 1.0);
     var dxOffset = 0;
     var dyOffset = 0;
     try {
-      if (dw > size.width) {
-        dxOffset = (x - dw * (x / size.width) - _x).toInt();
+      if (dw > effectiveWidth) {
+        final localX = (x - safeZoneThickness).clamp(0.0, effectiveWidth);
+        final targetX = safeZoneThickness + localX;
+        dxOffset = (targetX - dw * (localX / effectiveWidth) - _x).toInt();
       }
-      if (dh > size.height) {
-        dyOffset = (y - dh * (y / size.height) - _y).toInt();
+      if (dh > effectiveHeight) {
+        final localY = (y - safeZoneThickness).clamp(0.0, effectiveHeight);
+        final targetY = safeZoneThickness + localY;
+        dyOffset = (targetY - dh * (localY / effectiveHeight) - _y).toInt();
       }
     } catch (e) {
       debugPrintStack(
@@ -2495,12 +2562,45 @@ class CanvasModel with ChangeNotifier {
     return (scrollPixel, max);
   }
 
+  double _getEdgeScrollThickness() {
+    // In "all displays" mode, keep a safe zone near the edges to avoid accidental
+    // switching when monitors are stitched into one virtual desktop.
+    if (!_shouldUseAllDisplaySafeZone()) {
+      return _edgeScrollEdgeThickness.toDouble();
+    }
+    return _getAllDisplaySafeZoneThickness();
+  }
+
+  bool get showMonitorSafeZone {
+    return _shouldUseAllDisplaySafeZone();
+  }
+
+  double get monitorSafeZoneThickness {
+    return _getAllDisplaySafeZoneThickness();
+  }
+
+  void setDesktopCanvasNavigationMode(bool enabled) {
+    if (_desktopCanvasNavigationMode == enabled) {
+      return;
+    }
+    _desktopCanvasNavigationMode = enabled;
+    if (enabled) {
+      cancelEdgeScroll();
+    }
+  }
+
   void edgeScrollMouse(double x, double y) async {
+    if (_desktopCanvasNavigationMode) {
+      return;
+    }
     if ((_edgeScrollState == EdgeScrollState.inactive) ||
         (size.width == 0 || size.height == 0) ||
         !(_horizontal.hasClients || _vertical.hasClients)) {
       return;
     }
+
+    final edgeThickness = _getEdgeScrollThickness();
+    final outerEdgeThickness = edgeThickness;
 
     if (_edgeScrollState == EdgeScrollState.armed) {
       // Edge scroll is armed to become active once the cursor
@@ -2510,7 +2610,7 @@ class CanvasModel with ChangeNotifier {
       // doesn't happen yet.
       final clientArea = Rect.fromLTWH(0, 0, size.width, size.height);
 
-      final innerZone = clientArea.deflate(_edgeScrollEdgeThickness.toDouble());
+      final innerZone = clientArea.deflate(outerEdgeThickness);
 
       if (innerZone.contains(Offset(x, y))) {
         _edgeScrollState = EdgeScrollState.active;
@@ -2523,16 +2623,16 @@ class CanvasModel with ChangeNotifier {
     var dxOffset = 0.0;
     var dyOffset = 0.0;
 
-    if (x < _edgeScrollEdgeThickness) {
-      dxOffset = x - _edgeScrollEdgeThickness;
-    } else if (x >= size.width - _edgeScrollEdgeThickness) {
-      dxOffset = x - (size.width - _edgeScrollEdgeThickness);
+    if (x < outerEdgeThickness) {
+      dxOffset = x - outerEdgeThickness;
+    } else if (x >= size.width - outerEdgeThickness) {
+      dxOffset = x - (size.width - outerEdgeThickness);
     }
 
-    if (y < _edgeScrollEdgeThickness) {
-      dyOffset = y - _edgeScrollEdgeThickness;
-    } else if (y >= size.height - _edgeScrollEdgeThickness) {
-      dyOffset = y - (size.height - _edgeScrollEdgeThickness);
+    if (y < outerEdgeThickness) {
+      dyOffset = y - outerEdgeThickness;
+    } else if (y >= size.height - outerEdgeThickness) {
+      dyOffset = y - (size.height - outerEdgeThickness);
     }
 
     var encroachment = Vector2(dxOffset, dyOffset);
@@ -2633,6 +2733,26 @@ class CanvasModel with ChangeNotifier {
     if (isMobile) {
       isMobileCanvasChanged = true;
     }
+    _syncImageOverflow();
+    notifyListeners();
+  }
+
+  void zoomDesktopCanvas(double factor, Offset focalPoint) {
+    if (parent.target?.imageModel.image == null ||
+        factor <= 0 ||
+        !factor.isFinite) {
+      return;
+    }
+    final previousScale = _scale;
+    final nextScale = (_scale * factor)
+        .clamp(kScaleCustomMinPercent / 100.0, kScaleCustomMaxPercent / 100.0);
+    if ((nextScale - previousScale).abs() < 0.0001) {
+      return;
+    }
+    _scale = nextScale;
+    _x = focalPoint.dx - (focalPoint.dx - _x) / previousScale * _scale;
+    _y = focalPoint.dy - (focalPoint.dy - _y) / previousScale * _scale;
+    _syncImageOverflow();
     notifyListeners();
   }
 

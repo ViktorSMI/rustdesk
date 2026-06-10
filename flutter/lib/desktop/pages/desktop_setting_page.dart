@@ -1803,6 +1803,30 @@ class _DisplayState extends State<_Display> {
       setState(() {});
     }
 
+    final safeZonePercent = (double.tryParse(bind.mainGetUserDefaultOption(
+                key: kOptionAllDisplaysSafeZonePercent)) ??
+            10.0)
+        .clamp(0.0, 30.0);
+    final canvasNavigationSensitivity = (double.tryParse(
+                bind.mainGetUserDefaultOption(
+                    key: kOptionCanvasNavigationSensitivity)) ??
+            100.0)
+        .clamp(25.0, 300.0);
+
+    onSafeZonePercentChanged(double value) async {
+      await bind.mainSetUserDefaultOption(
+          key: kOptionAllDisplaysSafeZonePercent,
+          value: value.round().toString());
+      setState(() {});
+    }
+
+    onCanvasNavigationSensitivityChanged(double value) async {
+      await bind.mainSetUserDefaultOption(
+          key: kOptionCanvasNavigationSensitivity,
+          value: value.round().toString());
+      setState(() {});
+    }
+
     return _Card(title: 'Default Scroll Style', children: [
       _Radio(context,
           value: kRemoteScrollStyleAuto,
@@ -1814,6 +1838,12 @@ class _DisplayState extends State<_Display> {
           groupValue: groupValue,
           label: 'Scrollbar',
           onChanged: isOptFixed ? null : onChanged),
+      if (isMacOS)
+        _Radio(context,
+            value: kRemoteScrollStyleCanvas,
+            groupValue: groupValue,
+            label: 'Canvas',
+            onChanged: isOptFixed ? null : onChanged),
       if (!isWeb) ...[
         _Radio(context,
             value: kRemoteScrollStyleEdge,
@@ -1831,6 +1861,37 @@ class _DisplayState extends State<_Display> {
                   : onEdgeScrollEdgeThicknessChanged,
             )),
       ],
+      if (isMacOS)
+        _Checkbox(
+          label: 'Use Cmd + drag / wheel to navigate canvas',
+          getValue: () => option2bool(
+              kOptionMacCmdCanvasNavigation,
+              bind.mainGetUserDefaultOption(
+                  key: kOptionMacCmdCanvasNavigation)),
+          setValue: (value) => bind.mainSetUserDefaultOption(
+              key: kOptionMacCmdCanvasNavigation,
+              value: bool2option(kOptionMacCmdCanvasNavigation, value)),
+        ),
+      if (isMacOS) ...[
+        Text('Canvas navigation sensitivity',
+                style: Theme.of(context).textTheme.bodyMedium)
+            .marginOnly(left: _kCheckBoxLeftMargin, top: 8, bottom: 4),
+        CanvasSensitivityControl(
+          value: canvasNavigationSensitivity,
+          onChanged: isOptionFixed(kOptionCanvasNavigationSensitivity)
+              ? null
+              : onCanvasNavigationSensitivityChanged,
+        ).marginOnly(left: _kCheckBoxLeftMargin),
+      ],
+      Text('All monitors safe zone',
+              style: Theme.of(context).textTheme.bodyMedium)
+          .marginOnly(left: _kCheckBoxLeftMargin, top: 8, bottom: 4),
+      SafeZonePercentControl(
+        value: safeZonePercent,
+        onChanged: isOptionFixed(kOptionAllDisplaysSafeZonePercent)
+            ? null
+            : onSafeZonePercentChanged,
+      ).marginOnly(left: _kCheckBoxLeftMargin),
     ]);
   }
 

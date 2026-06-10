@@ -366,8 +366,10 @@ class InputModel {
               !model.isViewCamera) {
             _sideButtonDownModels[mb] = model;
             // Fire-and-forget to avoid blocking the platform channel handler.
-            unawaited(model._sendMouseUnchecked(type, mb).catchError((Object e) {
-              debugPrint('[InputModel] failed to send side button $type for $mb: $e');
+            unawaited(
+                model._sendMouseUnchecked(type, mb).catchError((Object e) {
+              debugPrint(
+                  '[InputModel] failed to send side button $type for $mb: $e');
             }));
           }
         } else {
@@ -377,8 +379,10 @@ class InputModel {
           // release always goes through even if permissions changed.
           final model = _sideButtonDownModels.remove(mb);
           if (model != null) {
-            unawaited(model._sendMouseUnchecked(type, mb).catchError((Object e) {
-              debugPrint('[InputModel] failed to send side button $type for $mb: $e');
+            unawaited(
+                model._sendMouseUnchecked(type, mb).catchError((Object e) {
+              debugPrint(
+                  '[InputModel] failed to send side button $type for $mb: $e');
             }));
           }
         }
@@ -489,6 +493,30 @@ class InputModel {
   int get trackpadSpeed => _trackpadSpeed;
   bool get useEdgeScroll =>
       parent.target!.canvasModel.scrollStyle == ScrollStyle.scrolledge;
+  bool get useCanvasScroll =>
+      parent.target!.canvasModel.scrollStyle == ScrollStyle.scrollcanvas;
+  bool get _isMacCanvasNavigationEnabled =>
+      isMacOS &&
+      option2bool(kOptionMacCmdCanvasNavigation,
+          bind.mainGetUserDefaultOption(key: kOptionMacCmdCanvasNavigation));
+  bool get _isMacCanvasNavigationModifierActive =>
+      _isMacCanvasNavigationEnabled &&
+      useCanvasScroll &&
+      command &&
+      !_relativeMouse.enabled.value;
+  bool get _isMacCanvasNavigationModeActive =>
+      _macCanvasNavigationMode &&
+      useCanvasScroll &&
+      !_relativeMouse.enabled.value;
+  double get _macCanvasNavigationSensitivity {
+    final raw = double.tryParse(
+        bind.mainGetUserDefaultOption(key: kOptionCanvasNavigationSensitivity));
+    return ((raw ?? 100.0).clamp(25.0, 300.0)) / 100.0;
+  }
+
+  bool _macCanvasNavigationMode = false;
+  bool _canvasNavDragging = false;
+  Offset? _canvasNavLastLocalPosition;
 
   /// Check if the connected server supports relative mouse mode.
   bool get isRelativeMouseModeSupported => _relativeMouse.isSupported;
@@ -789,6 +817,17 @@ class InputModel {
       toReleaseRawKeys.updateKeyUp(key, e);
     }
 
+    if (_isMacCanvasNavigationEnabled &&
+        (key == LogicalKeyboardKey.metaLeft ||
+            key == LogicalKeyboardKey.metaRight ||
+            key == LogicalKeyboardKey.superKey)) {
+      _setMacCanvasNavigationMode(e is! RawKeyUpEvent);
+      if (e is RawKeyUpEvent) {
+        _stopMacCanvasNavigationDrag();
+      }
+      return KeyEventResult.handled;
+    }
+
     // On some mobile soft-keyboard paths, Flutter may leave cached Shift state
     // set even though the current raw key event is not shifted anymore.
     if (e is RawKeyDownEvent &&
@@ -859,6 +898,17 @@ class InputModel {
       handleKeyUpEventModifiers(e);
     } else if (e is KeyDownEvent) {
       handleKeyDownEventModifiers(e);
+    }
+
+    if (_isMacCanvasNavigationEnabled &&
+        (e.logicalKey == LogicalKeyboardKey.metaLeft ||
+            e.logicalKey == LogicalKeyboardKey.metaRight ||
+            e.logicalKey == LogicalKeyboardKey.superKey)) {
+      _setMacCanvasNavigationMode(e is! KeyUpEvent);
+      if (e is KeyUpEvent) {
+        _stopMacCanvasNavigationDrag();
+      }
+      return KeyEventResult.handled;
     }
 
     bool isMobileAndMapMode = false;
@@ -1152,6 +1202,7 @@ class InputModel {
     // Fix status
     if (!enter) {
       resetModifiers();
+      _setMacCanvasNavigationMode(false);
     }
     _relativeMouse.onEnterOrLeaveImage(enter);
     _flingTimer?.cancel();
@@ -1276,6 +1327,7 @@ class InputModel {
   }
 
   void onWindowBlur() {
+    _setMacCanvasNavigationMode(false);
     _relativeMouse.onWindowBlur();
   }
 
@@ -1285,7 +1337,6 @@ class InputModel {
 
   void onPointHoverImage(PointerHoverEvent e) {
     _stopFling = true;
-    if (isViewOnly && !showMyCursor) return;
     if (e.kind != ui.PointerDeviceKind.mouse) return;
 
     // May fix https://github.com/rustdesk/rustdesk/issues/13009
@@ -1296,6 +1347,16 @@ class InputModel {
       return;
     }
 
+    if (_isMacCanvasNavigationModeActive) {
+      if (!isPhysicalMouse.value) {
+        isPhysicalMouse.value = true;
+      }
+      _canvasNavLastLocalPosition = e.localPosition;
+      return;
+    }
+
+    if (isViewOnly && !showMyCursor) return;
+
     // Only update pointer region when relative mouse mode is enabled.
     // This avoids unnecessary tracking when not in relative mode.
     if (_relativeMouse.enabled.value) {
@@ -1304,6 +1365,10 @@ class InputModel {
 
     if (!isPhysicalMouse.value) {
       isPhysicalMouse.value = true;
+    }
+    if (_isMacCanvasNavigationModeActive) {
+      _canvasNavLastLocalPosition = e.localPosition;
+      return;
     }
     if (isPhysicalMouse.value) {
       if (!_relativeMouse.handleRelativeMouseMove(e.localPosition)) {
@@ -1316,6 +1381,7 @@ class InputModel {
   void onPointerPanZoomStart(PointerPanZoomStartEvent e) {
     _lastScale = 1.0;
     _stopFling = true;
+    if (_isMacCanvasNavigationModeActive) return;
     if (isViewOnly) return;
     if (isViewCamera) return;
     if (peerPlatform == kPeerPlatformAndroid) {
@@ -1325,6 +1391,21 @@ class InputModel {
 
   // https://docs.flutter.dev/release/breaking-changes/trackpad-gestures
   void onPointerPanZoomUpdate(PointerPanZoomUpdateEvent e) {
+    if (_isMacCanvasNavigationModeActive) {
+      final sensitivity = _macCanvasNavigationSensitivity;
+      final scaleFactor = _lastScale == 0 ? e.scale : e.scale / _lastScale;
+      _lastScale = e.scale;
+      if (e.panDelta != Offset.zero) {
+        parent.target!.canvasModel.panDesktopCanvas(e.panDelta * sensitivity);
+      }
+      if ((scaleFactor - 1.0).abs() >= 0.0001) {
+        final adjustedScaleFactor =
+            max(0.05, 1.0 + (scaleFactor - 1.0) * sensitivity);
+        parent.target!.canvasModel
+            .zoomDesktopCanvas(adjustedScaleFactor, e.localPosition);
+      }
+      return;
+    }
     if (isViewOnly) return;
     if (isViewCamera) return;
     if (peerPlatform != kPeerPlatformAndroid) {
@@ -1449,6 +1530,10 @@ class InputModel {
   }
 
   void onPointerPanZoomEnd(PointerPanZoomEndEvent e) {
+    if (_isMacCanvasNavigationModeActive) {
+      _lastScale = 1.0;
+      return;
+    }
     if (isViewCamera) return;
     if (peerPlatform == kPeerPlatformAndroid) {
       handlePointerEvent('touch', kMouseEventTypePanEnd, e.position);
@@ -1515,7 +1600,6 @@ class InputModel {
     if (isDesktop) _queryOtherWindowCoords = true;
     _remoteWindowCoords = [];
     _windowRect = null;
-    if (isViewOnly && !showMyCursor) return;
     if (isViewCamera) return;
 
     // Track mouse down events for duplicate detection on iOS.
@@ -1542,6 +1626,14 @@ class InputModel {
       }
     }
     if (isPhysicalMouse.value) {
+      if (_isMacCanvasNavigationModeActive) {
+        if ((e.buttons & kPrimaryMouseButton) != 0) {
+          _canvasNavDragging = true;
+        }
+        _canvasNavLastLocalPosition = e.localPosition;
+        return;
+      }
+      if (isViewOnly && !showMyCursor) return;
       // In relative mouse mode, send button events without position.
       // Use _relativeMouse.enabled.value consistently with the guard above.
       if (_relativeMouse.enabled.value) {
@@ -1555,7 +1647,6 @@ class InputModel {
 
   void onPointUpImage(PointerUpEvent e) {
     if (isDesktop) _queryOtherWindowCoords = false;
-    if (isViewOnly && !showMyCursor) return;
     if (isViewCamera) return;
 
     if (_relativeMouse.enabled.value) {
@@ -1563,6 +1654,14 @@ class InputModel {
     }
 
     if (e.kind != ui.PointerDeviceKind.mouse) return;
+    if (_canvasNavDragging) {
+      _stopMacCanvasNavigationDrag();
+      return;
+    }
+    if (_isMacCanvasNavigationModeActive) {
+      return;
+    }
+    if (isViewOnly && !showMyCursor) return;
     if (isPhysicalMouse.value) {
       // In relative mouse mode, send button events without position.
       // Use _relativeMouse.enabled.value consistently with the guard above.
@@ -1576,7 +1675,6 @@ class InputModel {
   }
 
   void onPointMoveImage(PointerMoveEvent e) {
-    if (isViewOnly && !showMyCursor) return;
     if (isViewCamera) return;
     if (e.kind != ui.PointerDeviceKind.mouse) return;
 
@@ -1590,6 +1688,20 @@ class InputModel {
       });
       _queryOtherWindowCoords = false;
     }
+    if (_canvasNavDragging && _isMacCanvasNavigationModeActive) {
+      final last = _canvasNavLastLocalPosition;
+      if (last != null) {
+        parent.target!.canvasModel.panDesktopCanvas(
+            (e.localPosition - last) * _macCanvasNavigationSensitivity);
+      }
+      _canvasNavLastLocalPosition = e.localPosition;
+      return;
+    }
+    if (_isMacCanvasNavigationModeActive) {
+      _canvasNavLastLocalPosition = e.localPosition;
+      return;
+    }
+    if (isViewOnly && !showMyCursor) return;
     if (isPhysicalMouse.value) {
       if (!_relativeMouse.handleRelativeMouseMove(e.localPosition)) {
         handleMouse(_getMouseEvent(e, _kMouseEventMove), e.position,
@@ -1624,12 +1736,23 @@ class InputModel {
   /// scroll deltas that are independent of cursor position. Games and 3D applications
   /// handle scroll events the same way regardless of mouse mode.
   void onPointerSignalImage(PointerSignalEvent e) {
-    if (isViewOnly) return;
-    if (isViewCamera) return;
     if (e is PointerScrollEvent) {
+      if (_isMacCanvasNavigationModeActive) {
+        final sensitivity = _macCanvasNavigationSensitivity;
+        final dominantDelta = e.scrollDelta.dy.abs() >= e.scrollDelta.dx.abs()
+            ? e.scrollDelta.dy
+            : e.scrollDelta.dx;
+        final zoomFactor = exp(-dominantDelta * 0.0015 * sensitivity);
+        parent.target!.canvasModel
+            .zoomDesktopCanvas(zoomFactor, e.localPosition);
+        return;
+      }
+      if (isViewOnly) return;
+      if (isViewCamera) return;
       final rawDx = e.scrollDelta.dx;
       final rawDy = e.scrollDelta.dy;
-      final dominantDelta = rawDx.abs() > rawDy.abs() ? rawDx.abs() : rawDy.abs();
+      final dominantDelta =
+          rawDx.abs() > rawDy.abs() ? rawDx.abs() : rawDy.abs();
       final isSmooth = dominantDelta < 1;
       final nowUs = DateTime.now().microsecondsSinceEpoch;
       final dtUs = _lastWheelTsUs == 0 ? 0 : nowUs - _lastWheelTsUs;
@@ -1672,10 +1795,15 @@ class InputModel {
     }
   }
 
-  void refreshMousePos() => handleMouse({
-        'buttons': 0,
-        'type': _kMouseEventMove,
-      }, lastMousePos, edgeScroll: useEdgeScroll);
+  void refreshMousePos() {
+    if (_isMacCanvasNavigationModeActive || useCanvasScroll) {
+      return;
+    }
+    handleMouse({
+      'buttons': 0,
+      'type': _kMouseEventMove,
+    }, lastMousePos, edgeScroll: useEdgeScroll);
+  }
 
   void tryMoveEdgeOnExit(Offset pos) => handleMouse(
         {
@@ -1714,6 +1842,22 @@ class InputModel {
       y = rect.bottom - 1;
     }
     return Offset(x, y);
+  }
+
+  void _stopMacCanvasNavigationDrag() {
+    _canvasNavDragging = false;
+    _canvasNavLastLocalPosition = null;
+  }
+
+  void _setMacCanvasNavigationMode(bool active) {
+    if (_macCanvasNavigationMode == active) {
+      return;
+    }
+    _macCanvasNavigationMode = active;
+    parent.target?.canvasModel.setDesktopCanvasNavigationMode(active);
+    if (!active) {
+      _stopMacCanvasNavigationDrag();
+    }
   }
 
   void handlePointerEvent(String kind, String type, Offset offset) {
@@ -1911,7 +2055,8 @@ class InputModel {
 
       if (edgeScroll) {
         canvasModel.edgeScrollMouse(x, y);
-      } else if (moveCanvas) {
+      } else if (moveCanvas &&
+          canvasModel.scrollStyle == ScrollStyle.scrollauto) {
         canvasModel.moveDesktopMouse(x, y);
       }
 
@@ -1978,7 +2123,8 @@ class InputModel {
     var nearBottom = (canvas.size.height - y) < nearThr;
     final imageWidth = rect.width * canvas.scale;
     final imageHeight = rect.height * canvas.scale;
-    if (canvas.scrollStyle != ScrollStyle.scrollauto) {
+    if (canvas.scrollStyle != ScrollStyle.scrollauto &&
+        canvas.scrollStyle != ScrollStyle.scrollcanvas) {
       x += imageWidth * canvas.scrollX;
       y += imageHeight * canvas.scrollY;
 
